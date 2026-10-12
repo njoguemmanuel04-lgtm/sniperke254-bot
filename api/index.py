@@ -4,7 +4,7 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-# Load bot token from environment variables
+# Load token from environment variables
 TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -25,10 +25,9 @@ def get_live_gold_price():
   try:
     url = "https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT"
     res = requests.get(url, timeout=5).json()
-    price = float(res["symbols"][0]["price"])
-    return f"${price:,.2f}"
+    return float(res["symbols"][0]["price"])
   except Exception:
-    return "Market Data Unavailable"
+    return None
 
 
 def get_live_btc_price():
@@ -38,10 +37,9 @@ def get_live_btc_price():
         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
     )
     res = requests.get(url, timeout=5).json()
-    price = res["bitcoin"]["usd"]
-    return f"${price:,.2f}"
+    return float(res["bitcoin"]["usd"])
   except Exception:
-    return "Market Data Unavailable"
+    return None
 
 
 @app.route("/", methods=["POST"])
@@ -56,34 +54,61 @@ def webhook():
     # /start or general menu
     if "/START" in text or "START" in text:
       reply = (
-          "🔥 *SNIPER KE 254 BOT LIVE!* 🔥\n\nCommands:\n/gold - Live Gold"
-          " Signal\n/btc - Live Bitcoin Signal\n/forex - Major Forex Pairs"
+          "🔥 *SNIPER KE 254 BOT LIVE!* 🔥\n\nCommands:\n/gold - Dynamic Gold"
+          " Signal\n/btc - Dynamic Bitcoin Signal\n/forex - Forex Signals"
       )
       send_message(chat_id, reply)
 
-    # /gold command
+    # /gold command with dynamic TP & SL
     elif "/GOLD" in text:
-      live_price = get_live_gold_price()
-      reply = (
-          f"🥇 *SNIPER KE 254 - GOLD (XAU/USD)*\n\nLive Price:"
-          f" {live_price}\nSignal: *BUY GOLD* 📈\n\n*Risk: 1%*"
-      )
+      price = get_live_gold_price()
+      if price:
+        # Calculate levels based on a $10 Stop Loss and $15/$30 Take Profits
+        sl = price - 10.0
+        tp1 = price + 15.0
+        tp2 = price + 30.0
+
+        reply = (
+            f"🥇 *SNIPER KE 254 - GOLD (XAU/USD)*\n\n"
+            f"📍 *Entry (Live):* ${price:,.2f}\n"
+            f"📈 *Signal:* BUY GOLD\n\n"
+            f"🎯 *TP1:* ${tp1:,.2f}\n"
+            f"🎯 *TP2:* ${tp2:,.2f}\n"
+            f"🛑 *SL:* ${sl:,.2f}\n\n"
+            f"⚖️ *Risk:* 1% per trade"
+        )
+      else:
+        reply = "⚠️ *Error:* Live Gold data currently unavailable."
       send_message(chat_id, reply)
 
-    # /btc command
+    # /btc command with dynamic TP & SL
     elif "/BTC" in text:
-      live_price = get_live_btc_price()
-      reply = (
-          f"₿ *SNIPER KE 254 - BITCOIN (BTC/USD)*\n\nLive Price:"
-          f" {live_price}\nSignal: *BULLISH ACCUMULATION* 🚀\n\n*Risk: 2%*"
-      )
+      price = get_live_btc_price()
+      if price:
+        # Calculate levels based on a $1,000 Stop Loss and $1,500/$3,000 Take Profits
+        sl = price - 1000.0
+        tp1 = price + 1500.0
+        tp2 = price + 3000.0
+
+        reply = (
+            f"₿ *SNIPER KE 254 - BITCOIN (BTC/USD)*\n\n"
+            f"📍 *Entry (Live):* ${price:,.2f}\n"
+            f"🚀 *Signal:* BUY BITCOIN\n\n"
+            f"🎯 *TP1:* ${tp1:,.2f}\n"
+            f"🎯 *TP2:* ${tp2:,.2f}\n"
+            f"🛑 *SL:* ${sl:,.2f}\n\n"
+            f"⚖️ *Risk:* 2% per trade"
+        )
+      else:
+        reply = "⚠️ *Error:* Live Bitcoin data currently unavailable."
       send_message(chat_id, reply)
 
     # /forex command
     elif "/FOREX" in text:
       reply = (
-          "💱 *SNIPER KE 254 - FOREX WATCHLIST*\n\n• EUR/USD: Bullish"
-          " Reversal\n• GBP/USD: Ranging\n• USD/JPY: Bearish Momentum"
+          "💱 *SNIPER KE 254 - FOREX SIGNALS*\n\n"
+          "🟢 *EUR/USD - BUY*\nEntry: 1.0850\nTP: 1.0920 | SL: 1.0810\n\n"
+          "🔴 *USD/JPY - SELL*\nEntry: 149.20\nTP: 148.10 | SL: 149.80"
       )
       send_message(chat_id, reply)
 
