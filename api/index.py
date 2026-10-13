@@ -149,7 +149,8 @@ def webhook():
                 "Commands:\n"
                 "/gold - Pro EMA/RSI Gold Signal\n"
                 "/btc - Pro EMA/RSI Bitcoin Signal\n"
-                "/forex - Pro EMA/RSI Forex Signals\n"
+                "/forex - EUR/USD & USD/JPY Scan\n"
+                "/allforex - Scan All Major Forex Markets\n"
                 "/deriv - All Volatility Multipliers Scan"
             )
             send_message(chat_id, reply)
@@ -190,17 +191,48 @@ def webhook():
             eur_action, eur_price, eur_tp, _, eur_sl, eur_rsi = get_advanced_technical_signal("EURUSD=X")
             jpy_action, jpy_price, jpy_tp, _, jpy_sl, jpy_rsi = get_advanced_technical_signal("USDJPY=X")
             
-            eur_emoji = "🟢" if eur_action == "BUY" else "🔴"
-            jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴"
+            eur_emoji = "🟢" if eur_action == "BUY" else "🔴" if eur_action == "SELL" else "⏳"
+            jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴" if jpy_action == "SELL" else "⏳"
 
             message_parts = [
-                f"💱 *SNIPER KE 254 - PRO FOREX SIGNALS*\n\n{session_warning}"
+                f"💱 *SNIPER KE 254 - FOREX SIGNALS*\n\n{session_warning}"
                 f"{eur_emoji} *EUR/USD - {eur_action}* (RSI: `{eur_rsi:.1f}`)\n"
                 f"Entry: `{eur_price:.5f}` | TP: `{eur_tp:.5f}` | SL: `{eur_sl:.5f}`\n\n"
                 f"{jpy_emoji} *USD/JPY - {jpy_action}* (RSI: `{jpy_rsi:.1f}`)\n"
                 f"Entry: `{jpy_price:.3f}` | TP: `{jpy_tp:.3f}` | SL: `{jpy_sl:.3f}`"
             ]
             send_message(chat_id, "".join(message_parts))
+
+        elif "/ALLFOREX" in text or "/FOREXSCAN" in text:
+            forex_pairs = [
+                ("EUR/USD", "EURUSD=X"),
+                ("GBP/USD", "GBPUSD=X"),
+                ("USD/JPY", "USDJPY=X"),
+                ("AUD/USD", "AUDUSD=X"),
+                ("USD/CAD", "USDCAD=X"),
+                ("NZD/USD", "NZDUSD=X"),
+                ("USD/CHF", "USDCHF=X")
+            ]
+            
+            message_blocks = [f"💱 *SNIPER KE 254 - ALL MAJOR FOREX SCAN*\n\n{session_warning}"]
+            
+            for name, symbol in forex_pairs:
+                action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal(symbol)
+                emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⏳"
+                
+                if action in ["BUY", "SELL"]:
+                    block = (
+                        f"{emoji} *{name} - {action}* (RSI: `{rsi:.1f}`)\n"
+                        f"Entry: `{price:.5f}` | TP: `{tp1:.5f}` | SL: `{sl:.5f}`\n\n"
+                    )
+                else:
+                    block = (
+                        f"⏳ *{name} - NO SETUP* (RSI: `{rsi:.1f}`)\n"
+                        f"Price: `{price:.5f}` (Consolidating)\n\n"
+                    )
+                message_blocks.append(block)
+                
+            send_message(chat_id, "".join(message_blocks))
 
         elif "/DERIV" in text or "/VOLATILITY" in text:
             indices = [
