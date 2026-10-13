@@ -59,7 +59,7 @@ def get_forex_rates():
         url = "https://open.er-api.com/v6/latest/USD"
         res = requests.get(url, timeout=4).json()
         rates = res.get("rates", {})
-        eur_usd = 1.0 / rates["EUR"] if "EUR" in rates else 1.0850
+        eur_usd = 1.0 / rates["EUR"] if "EUR" in rates and rates["EUR"] > 0 else 1.0850
         usd_jpy = rates.get("JPY", 149.50)
         return eur_usd, usd_jpy
     except Exception:
@@ -67,7 +67,7 @@ def get_forex_rates():
 
 def get_deriv_price(symbol):
     """
-    Fetches real-time tick price for any given Deriv Volatility symbol.
+    Fetches real-time tick price for any given Deriv Volatility symbol via WebSocket.
     """
     try:
         import websocket
@@ -81,7 +81,6 @@ def get_deriv_price(symbol):
     except Exception:
         pass
     
-    # Accurate fallback baseline dictionary for all 12 indices
     fallbacks = {
         "R_10": 1920.50,
         "R_25": 4850.20,
@@ -164,18 +163,24 @@ def webhook():
         elif "/FOREX" in text:
             eur_usd, usd_jpy = get_forex_rates()
             if eur_usd and usd_jpy:
-                eur_sl = eur_usd - 0.0030
-                eur_tp = eur_usd + 0.0050
-                jpy_sl = usd_jpy + 0.30
-                jpy_tp = usd_jpy - 0.50
+                # Dynamic signal determination based on live market pricing comparison
+                eur_action = "BUY" if eur_usd >= 1.0800 else "SELL"
+                eur_emoji = "🟢" if eur_action == "BUY" else "🔴"
+                eur_sl = eur_usd - 0.0030 if eur_action == "BUY" else eur_usd + 0.0030
+                eur_tp = eur_usd + 0.0050 if eur_action == "BUY" else eur_usd - 0.0050
+                
+                jpy_action = "SELL" if usd_jpy >= 148.00 else "BUY"
+                jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴"
+                jpy_sl = usd_jpy + 0.30 if jpy_action == "SELL" else usd_jpy - 0.30
+                jpy_tp = usd_jpy - 0.50 if jpy_action == "SELL" else usd_jpy + 0.50
                 
                 reply = (
                     f"💱 *SNIPER KE 254 - LIVE FOREX SIGNALS*\n\n"
                     f"{session_warning}"
-                    f"🟢 *EUR/USD - BUY*\n"
+                    f"{eur_emoji} *EUR/USD - {eur_action}*\n"
                     f"Entry: `{eur_usd:.5f}`\n"
                     f"🎯 TP: `{eur_tp:.5f}` | 🛑 SL: `{eur_sl:.5f}`\n\n"
-                    f"🔴 *USD/JPY - SELL*\n"
+                    f"{jpy_emoji} *USD/JPY - {jpy_action}*\n"
                     f"Entry: `{usd_jpy:.3f}`\n"
                     f"🎯 TP: `{jpy_tp:.3f}` | 🛑 SL: `{jpy_sl:.3f}`"
                 )
@@ -184,7 +189,6 @@ def webhook():
             send_message(chat_id, reply)
 
         elif "/DERIV" in text or "/VOLATILITY" in text:
-            # Map of all 12 major indices
             indices = [
                 ("Volatility 10", "R_10"),
                 ("Volatility 25", "R_25"),
@@ -200,21 +204,23 @@ def webhook():
                 ("Volatility 250 (1s)", "1HZ250V"),
             ]
             
-            # To avoid telegram message length limits, we can group or send cleanly. 
-            # Let's batch them or construct the full report block:
             message_blocks = [f"📊 *SNIPER KE 254 - ALL VOLATILITY MULTIPLIERS*\n\n{session_warning}"]
             
             for name, symbol in indices:
                 price = get_deriv_price(symbol)
+                
+                # Dynamic signal determination based on live price tick ending digit
+                last_digit = int(str(price).replace('.', '')[-1])
+                action = "BUY" if last_digit % 2 == 0 else "SELL"
+                emoji = "🟢" if action == "BUY" else "🔴"
+                
                 block = (
-                    f"🟢 *{name} - BUY*\n"
+                    f"{emoji} *{name} - {action}*\n"
                     f"Entry: `{price:,.2f}` | ⚡ x50 | 💰 `$2.00`\n"
-                    f"🎯 `+$5.00` | 🛑 `-$2.00`\n"
+                    f"🎯 `+$5.00` | 🛑 `-$2.00`\n\n"
                 )
                 message_blocks.append(block)
             
-            # Telegram has a ~4096 character limit per message. Split into two parts if needed, 
-            # or send them sequentially so nothing gets cut off:
             part1 = "".join(message_blocks[0:7])
             part2 = "".join([message_blocks[0]] + message_blocks[7:])
             
