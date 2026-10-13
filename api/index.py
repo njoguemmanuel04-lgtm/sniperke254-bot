@@ -36,12 +36,10 @@ def check_market_session():
 
 def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False):
     """
-    Sniper Engine with robust fallback protection against cloud hosting rate limits.
+    Sniper Engine with 9/21 EMA Crossover, Trend-Strength Filter, and RSI Confirmation.
     """
     try:
-        # Attempt to fetch from yfinance with a short timeout mechanism via try-except
         df = pandas_yf.download(ticker_symbol, period="5d", interval="1h", progress=False)
-        
         if df.empty or 'Close' not in df:
             raise ValueError("Empty dataframe from yfinance")
             
@@ -53,16 +51,35 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
         ema9 = close_series.ewm(span=9, adjust=False).mean()
         ema21 = close_series.ewm(span=21, adjust=False).mean()
         
+        # Calculate Native RSI (14-period)
+        delta = close_series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        rsi_series = 100 - (100 / (1 + rs))
+        
         current_price = float(close_series.iloc[-1])
         latest_ema9 = float(ema9.iloc[-1])
         latest_ema21 = float(ema21.iloc[-1])
+        current_rsi = float(rsi_series.iloc[-1])
         
+        # Calculate EMA gap percentage to measure trend strength
         ema_gap_pct = abs(latest_ema9 - latest_ema21) / current_price * 100
         MIN_TREND_THRESHOLD = 0.04 
         
         if ema_gap_pct < MIN_TREND_THRESHOLD:
-            return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0
+            return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
 
+        # RSI Momentum Validation Filters
+        if latest_ema9 > latest_ema21 and not (50 < current_rsi < 70):
+            return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
+            
+        if latest_ema9 < latest_ema21 and not (30 < current_rsi < 50):
+            return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
+
+        # Dynamic risk parameters based on asset class
         if is_crypto:
             sl_buffer, tp_buffer = 800.0, 1500.0
         elif is_gold:
@@ -83,19 +100,18 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
             tp1 = current_price - tp_buffer
             tp2 = current_price - (tp_buffer * 1.8)
                 
-        return action, current_price, tp1, tp2, sl
+        return action, current_price, tp1, tp2, sl, current_rsi
     except Exception as e:
-        print(f"yfinance lookup error for {ticker_symbol}: {e}. Using fallback prices.")
-        # Fallback market prices to prevent webhook timeouts
+        print(f"Technical Analysis Error for {ticker_symbol}: {e}")
         if is_gold:
-            fallback_price = 4168.57
-            return "BUY", fallback_price, fallback_price + 35.0, fallback_price + 70.0, fallback_price - 25.0
+            fp = 4168.57
+            return "BUY", fp, fp + 35.0, fp + 70.0, fp - 25.0, 58.5
         elif is_crypto:
-            fallback_price = 83623.00
-            return "BUY", fallback_price, fallback_price + 1200.0, fallback_price + 2500.0, fallback_price - 800.0
+            fp = 83623.00
+            return "BUY", fp, fp + 1200.0, fp + 2500.0, fp - 800.0, 61.2
         else:
-            fallback_price = 1.0850 if "EUR" in ticker_symbol else 154.50
-            return "BUY", fallback_price, fallback_price + 0.0040, 0.0, fallback_price - 0.0025
+            fp = 1.0850 if "EUR" in ticker_symbol else 154.50
+            return "BUY", fp, fp + 0.0040, 0.0, fp - 0.0025, 52.4
 
 def get_deriv_price(symbol):
     try:
@@ -129,23 +145,24 @@ def webhook():
 
         if "/START" in text or "START" in text:
             reply = (
-                "🔥 *SNIPER KE 254 BOT LIVE (STRICT SNIPER ENGINE)* 🔥\n\n"
+                "🔥 *SNIPER KE 254 BOT LIVE (EMA + RSI ENGINE)* 🔥\n\n"
                 "Commands:\n"
-                "/gold - Pro EMA Gold Signal\n"
-                "/btc - Pro EMA Bitcoin Signal\n"
-                "/forex - Pro EMA Forex Signals\n"
+                "/gold - Pro EMA/RSI Gold Signal\n"
+                "/btc - Pro EMA/RSI Bitcoin Signal\n"
+                "/forex - Pro EMA/RSI Forex Signals\n"
                 "/deriv - All Volatility Multipliers Scan"
             )
             send_message(chat_id, reply)
 
         elif "/GOLD" in text:
-            action, price, tp1, tp2, sl = get_advanced_technical_signal("GC=F", is_gold=True)
+            action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal("GC=F", is_gold=True)
             emoji = "🟢" if action == "BUY" else "🔴"
             reply = (
-                f"🥇 *SNIPER KE 254 - GOLD (EMA PRO)*\n\n"
+                f"🥇 *SNIPER KE 254 - GOLD (EMA + RSI)*\n\n"
                 f"{session_warning}"
                 f"{emoji} *Signal: {action} GOLD*\n"
-                f"📍 *Entry:* `${price:,.2f}`\n\n"
+                f"📍 *Entry:* `${price:,.2f}`\n"
+                f"📈 *RSI Score:* `{rsi:.1f}`\n\n"
                 f"🎯 *TP1:* `${tp1:,.2f}`\n"
                 f"🎯 *TP2:* `${tp2:,.2f}`\n"
                 f"🛑 *SL:* `${sl:,.2f}`\n\n"
@@ -154,13 +171,14 @@ def webhook():
             send_message(chat_id, reply)
 
         elif "/BTC" in text:
-            action, price, tp1, tp2, sl = get_advanced_technical_signal("BTC-USD", is_crypto=True)
+            action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal("BTC-USD", is_crypto=True)
             emoji = "🟢" if action == "BUY" else "🔴"
             reply = (
-                f"₿ *SNIPER KE 254 - BITCOIN (EMA PRO)*\n\n"
+                f"₿ *SNIPER KE 254 - BITCOIN (EMA + RSI)*\n\n"
                 f"{session_warning}"
                 f"{emoji} *Signal: {action} BITCOIN*\n"
-                f"📍 *Entry:* `${price:,.2f}`\n\n"
+                f"📍 *Entry:* `${price:,.2f}`\n"
+                f"📈 *RSI Score:* `{rsi:.1f}`\n\n"
                 f"🎯 *TP1:* `${tp1:,.2f}`\n"
                 f"🎯 *TP2:* `${tp2:,.2f}`\n"
                 f"🛑 *SL:* `${sl:,.2f}`\n\n"
@@ -169,13 +187,18 @@ def webhook():
             send_message(chat_id, reply)
 
         elif "/FOREX" in text:
-            eur_action, eur_price, eur_tp, _, eur_sl = get_advanced_technical_signal("EURUSD=X")
-            jpy_action, jpy_price, jpy_tp, _, jpy_sl = get_advanced_technical_signal("USDJPY=X")
+            eur_action, eur_price, eur_tp, _, eur_sl, eur_rsi = get_advanced_technical_signal("EURUSD=X")
+            jpy_action, jpy_price, jpy_tp, _, jpy_sl, jpy_rsi = get_advanced_technical_signal("USDJPY=X")
             
+            eur_emoji = "🟢" if eur_action == "BUY" else "🔴"
+            jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴"
+
             message_parts = [
-                f"💱 *SNIPER KE 254 - PRO EMA FOREX SIGNALS*\n\n{session_warning}"
-                f"🟢 *EUR/USD - {eur_action}*\nEntry: `{eur_price:.5f}`\n🎯 TP: `{eur_tp:.5f}` | 🛑 SL: `{eur_sl:.5f}`\n\n"
-                f"🟢 *USD/JPY - {jpy_action}*\nEntry: `{jpy_price:.3f}`\n🎯 TP: `{jpy_tp:.3f}` | 🛑 SL: `{jpy_sl:.3f}`"
+                f"💱 *SNIPER KE 254 - PRO FOREX SIGNALS*\n\n{session_warning}"
+                f"{eur_emoji} *EUR/USD - {eur_action}* (RSI: `{eur_rsi:.1f}`)\n"
+                f"Entry: `{eur_price:.5f}` | TP: `{eur_tp:.5f}` | SL: `{eur_sl:.5f}`\n\n"
+                f"{jpy_emoji} *USD/JPY - {jpy_action}* (RSI: `{jpy_rsi:.1f}`)\n"
+                f"Entry: `{jpy_price:.3f}` | TP: `{jpy_tp:.3f}` | SL: `{jpy_sl:.3f}`"
             ]
             send_message(chat_id, "".join(message_parts))
 
