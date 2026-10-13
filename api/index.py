@@ -1,7 +1,7 @@
 import os
 import json
-import random
 import requests
+import yfinance as pandas_yf
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
 
@@ -11,7 +11,6 @@ TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 def send_message(chat_id, text):
-    """Helper function to send messages back to Telegram"""
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -24,10 +23,6 @@ def send_message(chat_id, text):
         print(f"Error sending message: {e}")
 
 def check_market_session():
-    """
-    Checks East Africa Time (EAT = UTC+3) to detect low-liquidity hours.
-    Asian / Rollover Session: 00:00 - 09:00 EAT
-    """
     eat_tz = timezone(timedelta(hours=3))
     now_eat = datetime.now(eat_tz)
     hour = now_eat.hour
@@ -39,42 +34,71 @@ def check_market_session():
         )
     return ""
 
-def get_live_gold_price():
+def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False):
+    """
+    Sniper Engine: Only fires when a high-probability EMA trend is confirmed.
+    Filters out choppy, sideways, and consolidation markets.
+    """
     try:
-        url = "https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT"
-        res = requests.get(url, timeout=4).json()
-        return float(res["symbols"][0]["price"])
-    except Exception:
-        return 2650.40
+        df = pandas_yf.download(ticker_symbol, period="5d", interval="1h", progress=False)
+        if df.empty:
+            return "NO_SIGNAL", "Data unavailable", 0, 0, 0
+        
+        # Flatten columns if multi-index is returned by yfinance
+        if hasattr(df['Close'], 'iloc') and len(df['Close'].shape) > 1:
+            close_series = df['Close'].iloc[:, 0]
+        else:
+            close_series = df['Close']
+            
+        ema9 = close_series.ewm(span=9, adjust=False).mean()
+        ema21 = close_series.ewm(span=21, adjust=False).mean()
+        
+        current_price = float(close_series.iloc[-1])
+        latest_ema9 = float(ema9.iloc[-1])
+        latest_ema21 = float(ema21.iloc[-1])
+        
+        # Calculate EMA gap percentage to measure trend strength
+        ema_gap_pct = abs(latest_ema9 - latest_ema21) / current_price * 100
 
-def get_live_btc_price():
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        res = requests.get(url, timeout=4).json()
-        return float(res["bitcoin"]["usd"])
-    except Exception:
-        return 65400.00
+        # Minimum trend threshold (0.04% separation required to confirm momentum)
+        MIN_TREND_THRESHOLD = 0.04 
+        
+        if ema_gap_pct < MIN_TREND_THRESHOLD:
+            # Market is sideways / ranging - Do NOT issue a trade!
+            return "NO_SIGNAL", "Market is consolidating / sideways", current_price, 0, 0
 
-def get_forex_rates():
-    try:
-        url = "https://open.er-api.com/v6/latest/USD"
-        res = requests.get(url, timeout=4).json()
-        rates = res.get("rates", {})
-        eur_usd = 1.0 / rates["EUR"] if "EUR" in rates and rates["EUR"] > 0 else 1.0850
-        usd_jpy = rates.get("JPY", 149.50)
-        return eur_usd, usd_jpy
-    except Exception:
-        return 1.0850, 149.50
+        # Dynamic risk parameters based on asset class
+        if is_crypto:
+            sl_buffer, tp_buffer = 800.0, 1500.0
+        elif is_gold:
+            sl_buffer, tp_buffer = 25.0, 45.0
+        elif "JPY" in ticker_symbol:
+            sl_buffer, tp_buffer = 0.35, 0.60
+        else:
+            sl_buffer, tp_buffer = 0.0030, 0.0055
+
+        # Strong trend confirmed
+        if latest_ema9 > latest_ema21:
+            action = "BUY"
+            sl = current_price - sl_buffer
+            tp1 = current_price + tp_buffer
+            tp2 = current_price + (tp_buffer * 1.8)
+        else:
+            action = "SELL"
+            sl = current_price + sl_buffer
+            tp1 = current_price - tp_buffer
+            tp2 = current_price - (tp_buffer * 1.8)
+                
+        return action, current_price, tp1, tp2, sl
+    except Exception as e:
+        print(f"Technical Analysis Error for {ticker_symbol}: {e}")
+        return "NO_SIGNAL", "Error processing market data", 0, 0, 0
 
 def get_deriv_price(symbol):
-    """
-    Fetches real-time tick price for any given Deriv Volatility symbol.
-    Uses a quick-fire short-lived connection optimized for Vercel.
-    """
     try:
         import websocket
         ws_url = "wss://ws.derivws.com/websockets/v3?app_id=59828"
-        ws = websocket.create_connection(ws_url, timeout=2.0)
+        ws = websocket.create_connection(ws_url, timeout=3.0)
         ws.send(json.dumps({"ticks": symbol}))
         response = json.loads(ws.recv())
         ws.close()
@@ -83,23 +107,12 @@ def get_deriv_price(symbol):
     except Exception:
         pass
     
-    # Baseline market averages with organic live fluctuation simulation if network delays
-    base_prices = {
-        "R_10": 1920.50,
-        "R_25": 4850.20,
-        "R_50": 340.10,
-        "R_75": 10500.40,
-        "R_100": 3100.80,
-        "1HZ10V": 1200.50,
-        "1HZ25V": 2500.30,
-        "1HZ50V": 410.60,
-        "1HZ75V": 4702.19,
-        "1HZ100V": 2450.80,
-        "1HZ150V": 520.10,
-        "1HZ250V": 890.40
+    fallbacks = {
+        "R_10": 1920.50, "R_25": 4850.20, "R_50": 340.10, "R_75": 10500.40, "R_100": 3100.80,
+        "1HZ10V": 1200.50, "1HZ25V": 2500.30, "1HZ50V": 410.60, "1HZ75V": 4702.19,
+        "1HZ100V": 2450.80, "1HZ150V": 520.10, "1HZ250V": 890.40
     }
-    base = base_prices.get(symbol, 1000.0)
-    return round(base + random.uniform(-1.5, 1.5), 2)
+    return fallbacks.get(symbol, 1000.0)
 
 @app.route('/', methods=['POST'])
 def webhook():
@@ -113,98 +126,107 @@ def webhook():
 
         if "/START" in text or "START" in text:
             reply = (
-                "🔥 *SNIPER KE 254 BOT LIVE!* 🔥\n\n"
+                "🔥 *SNIPER KE 254 BOT LIVE (STRICT SNIPER ENGINE)* 🔥\n\n"
                 "Commands:\n"
-                "/gold - Dynamic Gold Signal\n"
-                "/btc - Dynamic Bitcoin Signal\n"
-                "/forex - Dynamic Forex Signals\n"
+                "/gold - Pro EMA Gold Signal\n"
+                "/btc - Pro EMA Bitcoin Signal\n"
+                "/forex - Pro EMA Forex Signals\n"
                 "/deriv - All Volatility Multipliers Scan"
             )
             send_message(chat_id, reply)
 
         elif "/GOLD" in text:
-            price = get_live_gold_price()
-            if price:
-                sl = price - 25.0
-                tp1 = price + 35.0
-                tp2 = price + 70.0
-                
+            action, price, tp1, tp2, sl = get_advanced_technical_signal("GC=F", is_gold=True)
+            if action in ["BUY", "SELL"]:
+                emoji = "🟢" if action == "BUY" else "🔴"
                 reply = (
-                    f"🥇 *SNIPER KE 254 - GOLD (XAU/USD)*\n\n"
+                    f"🥇 *SNIPER KE 254 - GOLD (EMA PRO)*\n\n"
                     f"{session_warning}"
-                    f"📍 *Entry (Live):* ${price:,.2f}\n"
-                    f"📈 *Signal:* BUY GOLD\n\n"
-                    f"🎯 *TP1:* ${tp1:,.2f}\n"
-                    f"🎯 *TP2:* ${tp2:,.2f}\n"
-                    f"🛑 *SL:* ${sl:,.2f}\n\n"
+                    f"{emoji} *Signal: {action} GOLD*\n"
+                    f"📍 *Entry:* `${price:,.2f}`\n\n"
+                    f"🎯 *TP1:* `${tp1:,.2f}`\n"
+                    f"🎯 *TP2:* `${tp2:,.2f}`\n"
+                    f"🛑 *SL:* `${sl:,.2f}`\n\n"
                     f"⚖️ *Risk:* 1% per trade"
                 )
             else:
-                reply = "⚠️ *Error:* Live Gold data currently unavailable."
+                reply = (
+                    f"🥇 *SNIPER KE 254 - GOLD*\n\n"
+                    f"{session_warning}"
+                    f"⏳ *NO HIGH-PROBABILITY SETUP*\n"
+                    f"Market is currently consolidating or sideways near `${price:,.2f}`.\n"
+                    f"Stand by for clear trend confirmation before entering!"
+                )
             send_message(chat_id, reply)
 
         elif "/BTC" in text:
-            price = get_live_btc_price()
-            if price:
-                sl = price - 800.0
-                tp1 = price + 1200.0
-                tp2 = price + 2500.0
-                
+            action, price, tp1, tp2, sl = get_advanced_technical_signal("BTC-USD", is_crypto=True)
+            if action in ["BUY", "SELL"]:
+                emoji = "🟢" if action == "BUY" else "🔴"
                 reply = (
-                    f"₿ *SNIPER KE 254 - BITCOIN (BTC/USD)*\n\n"
+                    f"₿ *SNIPER KE 254 - BITCOIN (EMA PRO)*\n\n"
                     f"{session_warning}"
-                    f"📍 *Entry (Live):* ${price:,.2f}\n"
-                    f"🚀 *Signal:* BUY BITCOIN\n\n"
-                    f"🎯 *TP1:* ${tp1:,.2f}\n"
-                    f"🎯 *TP2:* ${tp2:,.2f}\n"
-                    f"🛑 *SL:* ${sl:,.2f}\n\n"
+                    f"{emoji} *Signal: {action} BITCOIN*\n"
+                    f"📍 *Entry:* `${price:,.2f}`\n\n"
+                    f"🎯 *TP1:* `${tp1:,.2f}`\n"
+                    f"🎯 *TP2:* `${tp2:,.2f}`\n"
+                    f"🛑 *SL:* `${sl:,.2f}`\n\n"
                     f"⚖️ *Risk:* 1-2% per trade"
                 )
             else:
-                reply = "⚠️ *Error:* Live Bitcoin data currently unavailable."
+                reply = (
+                    f"₿ *SNIPER KE 254 - BITCOIN*\n\n"
+                    f"{session_warning}"
+                    f"⏳ *NO HIGH-PROBABILITY SETUP*\n"
+                    f"Bitcoin is currently consolidating near `${price:,.2f}`.\n"
+                    f"Stand by for clear volume and trend confirmation!"
+                )
             send_message(chat_id, reply)
 
         elif "/FOREX" in text:
-            eur_usd, usd_jpy = get_forex_rates()
-            if eur_usd and usd_jpy:
-                eur_action = "BUY" if eur_usd >= 1.0800 else "SELL"
+            eur_action, eur_price, eur_tp, _, eur_sl = get_advanced_technical_signal("EURUSD=X")
+            jpy_action, jpy_price, jpy_tp, _, jpy_sl = get_advanced_technical_signal("USDJPY=X")
+            
+            message_parts = [f"💱 *SNIPER KE 254 - PRO EMA FOREX SIGNALS*\n\n{session_warning}"]
+            
+            # EUR/USD Block
+            if eur_action in ["BUY", "SELL"]:
                 eur_emoji = "🟢" if eur_action == "BUY" else "🔴"
-                eur_sl = eur_usd - 0.0030 if eur_action == "BUY" else eur_usd + 0.0030
-                eur_tp = eur_usd + 0.0050 if eur_action == "BUY" else eur_usd - 0.0050
-                
-                jpy_action = "SELL" if usd_jpy >= 148.00 else "BUY"
-                jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴"
-                jpy_sl = usd_jpy + 0.30 if jpy_action == "SELL" else usd_jpy - 0.30
-                jpy_tp = usd_jpy - 0.50 if jpy_action == "SELL" else usd_jpy + 0.50
-                
-                reply = (
-                    f"💱 *SNIPER KE 254 - LIVE FOREX SIGNALS*\n\n"
-                    f"{session_warning}"
+                message_parts.append(
                     f"{eur_emoji} *EUR/USD - {eur_action}*\n"
-                    f"Entry: `{eur_usd:.5f}`\n"
+                    f"Entry: `{eur_price:.5f}`\n"
                     f"🎯 TP: `{eur_tp:.5f}` | 🛑 SL: `{eur_sl:.5f}`\n\n"
+                )
+            else:
+                message_parts.append(
+                    f"⏳ *EUR/USD - NO SETUP*\n"
+                    f"Price `{eur_price:.5f}` is currently in consolidation.\n\n"
+                )
+
+            # USD/JPY Block
+            if jpy_action in ["BUY", "SELL"]:
+                jpy_emoji = "🟢" if jpy_action == "BUY" else "🔴"
+                message_parts.append(
                     f"{jpy_emoji} *USD/JPY - {jpy_action}*\n"
-                    f"Entry: `{usd_jpy:.3f}`\n"
+                    f"Entry: `{jpy_price:.3f}`\n"
                     f"🎯 TP: `{jpy_tp:.3f}` | 🛑 SL: `{jpy_sl:.3f}`"
                 )
             else:
-                reply = "⚠️ *Error:* Live Forex data currently unavailable."
-            send_message(chat_id, reply)
+                message_parts.append(
+                    f"⏳ *USD/JPY - NO SETUP*\n"
+                    f"Price `{jpy_price:.3f}` is currently in consolidation."
+                )
+
+            send_message(chat_id, "".join(message_parts))
 
         elif "/DERIV" in text or "/VOLATILITY" in text:
             indices = [
-                ("Volatility 10", "R_10"),
-                ("Volatility 25", "R_25"),
-                ("Volatility 50", "R_50"),
-                ("Volatility 75", "R_75"),
-                ("Volatility 100", "R_100"),
-                ("Volatility 10 (1s)", "1HZ10V"),
-                ("Volatility 25 (1s)", "1HZ25V"),
-                ("Volatility 50 (1s)", "1HZ50V"),
-                ("Volatility 75 (1s)", "1HZ75V"),
-                ("Volatility 100 (1s)", "1HZ100V"),
-                ("Volatility 150 (1s)", "1HZ150V"),
-                ("Volatility 250 (1s)", "1HZ250V"),
+                ("Volatility 10", "R_10"), ("Volatility 25", "R_25"),
+                ("Volatility 50", "R_50"), ("Volatility 75", "R_75"),
+                ("Volatility 100", "R_100"), ("Volatility 10 (1s)", "1HZ10V"),
+                ("Volatility 25 (1s)", "1HZ25V"), ("Volatility 50 (1s)", "1HZ50V"),
+                ("Volatility 75 (1s)", "1HZ75V"), ("Volatility 100 (1s)", "1HZ100V"),
+                ("Volatility 150 (1s)", "1HZ150V"), ("Volatility 250 (1s)", "1HZ250V"),
             ]
             
             message_blocks = [f"📊 *SNIPER KE 254 - ALL VOLATILITY MULTIPLIERS*\n\n{session_warning}"]
@@ -233,7 +255,7 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "🔥 SNIPER KE 254 LIVE!"
+    return "🔥 SNIPER KE 254 PRO ENGINE ACTIVE!"
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
