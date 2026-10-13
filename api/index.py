@@ -42,7 +42,7 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     try:
         df = pandas_yf.download(ticker_symbol, period="5d", interval="1h", progress=False)
         if df.empty:
-            return "NO_SIGNAL", "Data unavailable", 0, 0, 0
+            return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0
         
         # Flatten columns if multi-index is returned by yfinance
         if hasattr(df['Close'], 'iloc') and len(df['Close'].shape) > 1:
@@ -64,8 +64,8 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
         MIN_TREND_THRESHOLD = 0.04 
         
         if ema_gap_pct < MIN_TREND_THRESHOLD:
-            # Market is sideways / ranging - Do NOT issue a trade!
-            return "NO_SIGNAL", "Market is consolidating / sideways", current_price, 0, 0
+            # Market is sideways / ranging - Do NOT issue a trade! Return current_price as float
+            return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0
 
         # Dynamic risk parameters based on asset class
         if is_crypto:
@@ -92,7 +92,7 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
         return action, current_price, tp1, tp2, sl
     except Exception as e:
         print(f"Technical Analysis Error for {ticker_symbol}: {e}")
-        return "NO_SIGNAL", "Error processing market data", 0, 0, 0
+        return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0
 
 def get_deriv_price(symbol):
     try:
