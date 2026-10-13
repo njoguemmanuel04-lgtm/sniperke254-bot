@@ -1,4 +1,6 @@
 import os
+import json
+import websocket
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
@@ -61,6 +63,20 @@ def get_forex_rates():
     except Exception:
         return None, None
 
+def get_deriv_price(symbol="R_75"):
+    """Fetches live tick price from Deriv WebSocket API (App ID: 59828)"""
+    try:
+        ws_url = "wss://ws.derivws.com/websockets/v3?app_id=59828"
+        ws = websocket.create_connection(ws_url, timeout=3)
+        ws.send(json.dumps({"ticks": symbol}))
+        response = json.loads(ws.recv())
+        ws.close()
+        if "tick" in response:
+            return float(response["tick"]["quote"])
+    except Exception:
+        pass
+    return None
+
 @app.route('/', methods=['POST'])
 def webhook():
     data = request.get_json()
@@ -77,7 +93,8 @@ def webhook():
                 "Commands:\n"
                 "/gold - Dynamic Gold Signal\n"
                 "/btc - Dynamic Bitcoin Signal\n"
-                "/forex - Dynamic Forex Signals"
+                "/forex - Dynamic Forex Signals\n"
+                "/deriv - Deriv Volatility Indices (V75 & V100)"
             )
             send_message(chat_id, reply)
 
@@ -143,6 +160,30 @@ def webhook():
                 )
             else:
                 reply = "⚠️ *Error:* Live Forex data currently unavailable."
+            send_message(chat_id, reply)
+
+        elif "/DERIV" in text or "/VOLATILITY" in text:
+            v75_price = get_deriv_price("R_75")
+            v100_price = get_deriv_price("R_100")
+            
+            if v75_price and v100_price:
+                v75_sl = v75_price * 0.995
+                v75_tp = v75_price * 1.010
+                v100_sl = v100_price * 0.995
+                v100_tp = v100_price * 1.010
+                
+                reply = (
+                    f"📊 *SNIPER KE 254 - DERIV SYNTHETICS*\n\n"
+                    f"📉 *VOLATILITY 75 INDEX - BUY*\n"
+                    f"Entry: `{v75_price:,.2f}`\n"
+                    f"🎯 TP: `{v75_tp:,.2f}` | 🛑 SL: `{v75_sl:,.2f}`\n\n"
+                    f"📈 *VOLATILITY 100 INDEX - BUY*\n"
+                    f"Entry: `{v100_price:,.2f}`\n"
+                    f"🎯 TP: `{v100_tp:,.2f}` | 🛑 SL: `{v100_sl:,.2f}`\n\n"
+                    f"⚖️ *Risk:* $1.00 Multiplier Stake"
+                )
+            else:
+                reply = "⚠️ *Error:* Deriv WebSocket connection timed out."
             send_message(chat_id, reply)
             
     return jsonify({"status": "ok"})
