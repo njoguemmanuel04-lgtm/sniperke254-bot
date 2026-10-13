@@ -64,7 +64,7 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
         MIN_TREND_THRESHOLD = 0.04 
         
         if ema_gap_pct < MIN_TREND_THRESHOLD:
-            # Market is sideways / ranging - Do NOT issue a trade! Return current_price as float
+            # Market is sideways / ranging - Return current_price as float so formatting never fails
             return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0
 
         # Dynamic risk parameters based on asset class
