@@ -330,6 +330,67 @@ def webhook():
   return jsonify({"status": "ok"})
 
 
+# Automated Hourly Multi-Market Cron Route for Vercel
+@app.route("/cron-alert", methods=["GET"])
+def cron_alert():
+  chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+  if not chat_id:
+    return jsonify({"error": "No TELEGRAM_CHAT_ID configured"}), 400
+
+  assets_to_scan = [
+      ("Gold", "GC=F", False, True),
+      ("Bitcoin", "BTC-USD", True, False),
+      ("EUR/USD", "EURUSD=X", False, False),
+      ("GBP/USD", "GBPUSD=X", False, False),
+      ("USD/JPY", "USDJPY=X", False, False),
+      ("AUD/USD", "AUDUSD=X", False, False),
+      ("USD/CAD", "USDCAD=X", False, False),
+      ("NZD/USD", "NZDUSD=X", False, False),
+      ("USD/CHF", "USDCHF=X", False, False),
+  ]
+
+  signals_found = []
+
+  for name, symbol, is_crypto, is_gold in assets_to_scan:
+    action, price, tp1, tp2, sl, rsi, adx = get_advanced_technical_signal(
+        symbol, is_crypto=is_crypto, is_gold=is_gold
+    )
+
+    if action in ["BUY", "SELL"]:
+      emoji = "🟢" if action == "BUY" else "🔴"
+      if is_gold or is_crypto:
+        formatted_price = f"${price:,.2f}"
+        formatted_tp = f"${tp1:,.2f}"
+        formatted_sl = f"${sl:,.2f}"
+      else:
+        formatted_price = f"{price:.5f}"
+        formatted_tp = f"{tp1:.5f}"
+        formatted_sl = f"{sl:.5f}"
+
+      block = (
+          f"{emoji} *{name} - {action}*\n"
+          f"📍 *Entry:* `{formatted_price}` | RSI: `{rsi:.1f}` | ADX:"
+          f" `{adx:.1f}`\n"
+          f"🎯 *TP:* `{formatted_tp}` | 🛑 *SL:* `{formatted_sl}`\n\n"
+      )
+      signals_found.append(block)
+
+  if signals_found:
+    message = (
+        "🚨 *AUTOMATED SNIPER MULTI-MARKET ALERT* 🚨\n\n"
+        + "".join(signals_found)
+    )
+    send_message(chat_id, message)
+    return jsonify(
+        {"status": "signals_sent", "count": len(signals_found)}
+    )
+  else:
+    return jsonify({
+        "status": "no_setups_found",
+        "message": "All markets consolidating.",
+    })
+
+
 @app.route("/", methods=["GET"])
 def home():
   return "🔥 SNIPER KE 254 PRO ENGINE ACTIVE ON VERCEL!"
