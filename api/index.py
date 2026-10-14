@@ -37,7 +37,7 @@ def check_market_session():
 
 
 def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False):
-  """Sniper Engine enhanced with EMA, Native RSI, ADX, and Bollinger Bands."""
+  """Sniper Engine with optimized ADX & RSI filters for higher signal frequency."""
   try:
     df = pandas_yf.download(
         ticker_symbol, period="5d", interval="1h", progress=False
@@ -73,7 +73,7 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     rs = avg_gain / avg_loss
     rsi_series = 100 - (100 / (1 + rs))
 
-    # Native ADX (14-period) calculation for Trend Strength
+    # Native ADX (14-period)
     tr1 = high_series - low_series
     tr2 = (high_series - close_series.shift()).abs()
     tr3 = (low_series - close_series.shift()).abs()
@@ -111,19 +111,20 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     current_rsi = float(rsi_series.iloc[-1])
     current_adx = float(adx.iloc[-1])
 
-    # Filter 1: ADX Trend Strength (ADX > 22 ensures a real trend)
-    if current_adx < 22:
+    # RELAXED FILTER 1: ADX > 12 (Allows active directional movement)
+    if current_adx < 12:
       return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
-    # Filter 2: EMA Gap & RSI Pullback Windows
+    # RELAXED FILTER 2: EMA Gap > 0.02%
     ema_gap_pct = abs(latest_ema9 - latest_ema21) / current_price * 100
-    if ema_gap_pct < 0.08:
+    if ema_gap_pct < 0.02:
       return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
-    if latest_ema9 > latest_ema21 and not (45 <= current_rsi <= 58):
+    # RELAXED FILTER 3: WIDER RSI WINDOWS (30 to 75 for BUY / 25 to 70 for SELL)
+    if latest_ema9 > latest_ema21 and not (30 <= current_rsi <= 75):
       return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
-    if latest_ema9 < latest_ema21 and not (42 <= current_rsi <= 55):
+    if latest_ema9 < latest_ema21 and not (25 <= current_rsi <= 70):
       return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
     # Dynamic risk parameters
@@ -213,8 +214,8 @@ def webhook():
       if action == "NO_SIGNAL":
         send_message(
             chat_id,
-            f"🥇 *SNIPER KE 254 - GOLD*\n\n⏳ *NO SETUP* (Consolidating or weak"
-            f" ADX)\n📍 *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
+            f"🥇 *SNIPER KE 254 - GOLD*\n\n⏳ *NO SETUP* (Low activity)\n📍"
+            f" *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
             f" `{adx:.1f}`",
         )
       else:
@@ -239,8 +240,8 @@ def webhook():
       if action == "NO_SIGNAL":
         send_message(
             chat_id,
-            f"₿ *SNIPER KE 254 - BITCOIN*\n\n⏳ *NO SETUP* (Consolidating or weak"
-            f" ADX)\n📍 *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
+            f"₿ *SNIPER KE 254 - BITCOIN*\n\n⏳ *NO SETUP* (Low activity)\n📍"
+            f" *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
             f" `{adx:.1f}`",
         )
       else:
@@ -287,7 +288,7 @@ def webhook():
         else:
           block = (
               f"⏳ *{name} - NO SETUP* (RSI: `{rsi:.1f}` | ADX: `{adx:.1f}`)\n"
-              f"Price: `{price:.5f}` (Consolidating)\n\n"
+              f"Price: `{price:.5f}`\n\n"
           )
         message_blocks.append(block)
 
@@ -381,9 +382,7 @@ def cron_alert():
         + "".join(signals_found)
     )
     send_message(chat_id, message)
-    return jsonify(
-        {"status": "signals_sent", "count": len(signals_found)}
-    )
+    return jsonify({"status": "signals_sent", "count": len(signals_found)})
   else:
     return jsonify({
         "status": "no_setups_found",
