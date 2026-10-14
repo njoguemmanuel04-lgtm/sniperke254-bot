@@ -1,6 +1,6 @@
-flask
+Flask
 requests
-websocket-client
-gunicorn
 yfinance
 pandas
+numpy
+websocket-client
