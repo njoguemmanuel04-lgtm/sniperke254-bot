@@ -2,6 +2,8 @@ from datetime import datetime, timezone, timedelta
 import json
 import os
 from flask import Flask, jsonify, request
+import numpy as np
+import pandas as pd
 import requests
 import yfinance as pandas_yf
 
@@ -35,7 +37,7 @@ def check_market_session():
 
 
 def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False):
-  """Sniper Engine with Fixed Error Handling and Refined Pullback Logic."""
+  """Sniper Engine enhanced with EMA, Native RSI, ADX, and Bollinger Bands."""
   try:
     df = pandas_yf.download(
         ticker_symbol, period="5d", interval="1h", progress=False
@@ -43,15 +45,26 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     if df.empty or "Close" not in df:
       raise ValueError("Empty dataframe from yfinance")
 
-    if hasattr(df["Close"], "iloc") and len(df["Close"].shape) > 1:
-      close_series = df["Close"].iloc[:, 0]
-    else:
-      close_series = df["Close"]
+    close_series = (
+        df["Close"].iloc[:, 0]
+        if hasattr(df["Close"], "iloc") and len(df["Close"].shape) > 1
+        else df["Close"]
+    )
+    high_series = (
+        df["High"].iloc[:, 0]
+        if hasattr(df["High"], "iloc") and len(df["High"].shape) > 1
+        else df["High"]
+    )
+    low_series = (
+        df["Low"].iloc[:, 0]
+        if hasattr(df["Low"], "iloc") and len(df["Low"].shape) > 1
+        else df["Low"]
+    )
 
     ema9 = close_series.ewm(span=9, adjust=False).mean()
     ema21 = close_series.ewm(span=21, adjust=False).mean()
 
-    # Calculate Native RSI (14-period)
+    # Native RSI (14-period)
     delta = close_series.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -60,26 +73,60 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     rs = avg_gain / avg_loss
     rsi_series = 100 - (100 / (1 + rs))
 
+    # Native ADX (14-period) calculation for Trend Strength
+    tr1 = high_series - low_series
+    tr2 = (high_series - close_series.shift()).abs()
+    tr3 = (low_series - close_series.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.ewm(alpha=1 / 14, adjust=False).mean()
+
+    up_move = high_series - high_series.shift()
+    down_move = low_series.shift() - low_series
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    plus_dm_s = pd.Series(plus_dm, index=close_series.index)
+    minus_dm_s = pd.Series(minus_dm, index=close_series.index)
+
+    plus_di = (
+        100
+        * plus_dm_s.ewm(alpha=1 / 14, adjust=False).mean()
+        / atr14.replace(0, np.nan)
+    )
+    minus_di = (
+        100
+        * minus_dm_s.ewm(alpha=1 / 14, adjust=False).mean()
+        / atr14.replace(0, np.nan)
+    )
+    dx = (
+        100
+        * (plus_di - minus_di).abs()
+        / (plus_di + minus_di).replace(0, np.nan)
+    )
+    adx = dx.ewm(alpha=1 / 14, adjust=False).mean().fillna(0)
+
     current_price = float(close_series.iloc[-1])
     latest_ema9 = float(ema9.iloc[-1])
     latest_ema21 = float(ema21.iloc[-1])
     current_rsi = float(rsi_series.iloc[-1])
+    current_adx = float(adx.iloc[-1])
 
-    # Increased trend threshold to filter out consolidation/choppy movement
+    # Filter 1: ADX Trend Strength (ADX > 22 ensures a real trend)
+    if current_adx < 22:
+      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
+
+    # Filter 2: EMA Gap & RSI Pullback Windows
     ema_gap_pct = abs(latest_ema9 - latest_ema21) / current_price * 100
-    MIN_TREND_THRESHOLD = 0.08
+    if ema_gap_pct < 0.08:
+      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
-    if ema_gap_pct < MIN_TREND_THRESHOLD:
-      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
-
-    # Refined RSI Pullback Filters (Avoid buying overbought markets > 58)
     if latest_ema9 > latest_ema21 and not (45 <= current_rsi <= 58):
-      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
+      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
     if latest_ema9 < latest_ema21 and not (42 <= current_rsi <= 55):
-      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi
+      return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, current_rsi, current_adx
 
-    # Dynamic risk parameters based on asset class
+    # Dynamic risk parameters
     if is_crypto:
       sl_buffer, tp_buffer = 800.0, 1500.0
     elif is_gold:
@@ -100,12 +147,11 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
       tp1 = current_price - tp_buffer
       tp2 = current_price - (tp_buffer * 1.8)
 
-    return action, current_price, tp1, tp2, sl, current_rsi
+    return action, current_price, tp1, tp2, sl, current_rsi, current_adx
 
   except Exception as e:
     print(f"Technical Analysis Error for {ticker_symbol}: {e}")
-    # FIXED: Returns NO_SIGNAL safely instead of executing a fake trade
-    return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, 0.0
+    return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
 
 def get_deriv_price(symbol):
@@ -146,15 +192,14 @@ def webhook():
   if data and "message" in data:
     chat_id = data["message"]["chat"]["id"]
     text = data["message"].get("text", "").upper()
-
     session_warning = check_market_session()
 
     if "/START" in text or "START" in text:
       reply = (
-          "🔥 *SNIPER KE 254 BOT LIVE (EMA + RSI ENGINE)* 🔥\n\n"
+          "🔥 *SNIPER KE 254 BOT LIVE (EMA + RSI + ADX)* 🔥\n\n"
           "Commands:\n"
-          "/gold - Pro EMA/RSI Gold Signal\n"
-          "/btc - Pro EMA/RSI Bitcoin Signal\n"
+          "/gold - Pro Gold Signal\n"
+          "/btc - Pro Bitcoin Signal\n"
           "/forex - EUR/USD & USD/JPY Scan\n"
           "/allforex - Scan All Major Forex Markets\n"
           "/deriv - All Volatility Multipliers Scan"
@@ -162,23 +207,24 @@ def webhook():
       send_message(chat_id, reply)
 
     elif "/GOLD" in text:
-      action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal(
+      action, price, tp1, tp2, sl, rsi, adx = get_advanced_technical_signal(
           "GC=F", is_gold=True
       )
       if action == "NO_SIGNAL":
         send_message(
             chat_id,
-            "🥇 *SNIPER KE 254 - GOLD*\n\n⏳ *NO SETUP* (Market is consolidating"
-            f" or lacks clear trend, RSI: `{rsi:.1f}`)",
+            f"🥇 *SNIPER KE 254 - GOLD*\n\n⏳ *NO SETUP* (Consolidating or weak"
+            f" ADX)\n📍 *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
+            f" `{adx:.1f}`",
         )
       else:
         emoji = "🟢" if action == "BUY" else "🔴"
         reply = (
-            f"🥇 *SNIPER KE 254 - GOLD (EMA + RSI)*\n\n"
+            f"🥇 *SNIPER KE 254 - GOLD (PRO ENGINE)*\n\n"
             f"{session_warning}"
             f"{emoji} *Signal: {action} GOLD*\n"
             f"📍 *Entry:* `${price:,.2f}`\n"
-            f"📈 *RSI Score:* `{rsi:.1f}`\n\n"
+            f"📈 *RSI:* `{rsi:.1f}` | *ADX:* `{adx:.1f}`\n\n"
             f"🎯 *TP1:* `${tp1:,.2f}`\n"
             f"🎯 *TP2:* `${tp2:,.2f}`\n"
             f"🛑 *SL:* `${sl:,.2f}`\n\n"
@@ -187,59 +233,30 @@ def webhook():
         send_message(chat_id, reply)
 
     elif "/BTC" in text:
-      action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal(
+      action, price, tp1, tp2, sl, rsi, adx = get_advanced_technical_signal(
           "BTC-USD", is_crypto=True
       )
       if action == "NO_SIGNAL":
         send_message(
             chat_id,
-            "₿ *SNIPER KE 254 - BITCOIN*\n\n⏳ *NO SETUP* (Market consolidating,"
-            f" RSI: `{rsi:.1f}`)",
+            f"₿ *SNIPER KE 254 - BITCOIN*\n\n⏳ *NO SETUP* (Consolidating or weak"
+            f" ADX)\n📍 *Price:* `${price:,.2f}`\n📈 *RSI:* `{rsi:.1f}` | *ADX:*"
+            f" `{adx:.1f}`",
         )
       else:
         emoji = "🟢" if action == "BUY" else "🔴"
         reply = (
-            f"₿ *SNIPER KE 254 - BITCOIN (EMA + RSI)*\n\n"
+            f"₿ *SNIPER KE 254 - BITCOIN (PRO ENGINE)*\n\n"
             f"{session_warning}"
             f"{emoji} *Signal: {action} BITCOIN*\n"
             f"📍 *Entry:* `${price:,.2f}`\n"
-            f"📈 *RSI Score:* `{rsi:.1f}`\n\n"
+            f"📈 *RSI:* `{rsi:.1f}` | *ADX:* `{adx:.1f}`\n\n"
             f"🎯 *TP1:* `${tp1:,.2f}`\n"
             f"🎯 *TP2:* `${tp2:,.2f}`\n"
             f"🛑 *SL:* `${sl:,.2f}`\n\n"
             f"⚖️ *Risk:* 1-2% per trade"
         )
         send_message(chat_id, reply)
-
-    elif "/FOREX" in text:
-      eur_action, eur_price, eur_tp, _, eur_sl, eur_rsi = (
-          get_advanced_technical_signal("EURUSD=X")
-      )
-      jpy_action, jpy_price, jpy_tp, _, jpy_sl, jpy_rsi = (
-          get_advanced_technical_signal("USDJPY=X")
-      )
-
-      eur_emoji = (
-          "🟢"
-          if eur_action == "BUY"
-          else "🔴" if eur_action == "SELL" else "⏳"
-      )
-      jpy_emoji = (
-          "🟢"
-          if jpy_action == "BUY"
-          else "🔴" if jpy_action == "SELL" else "⏳"
-      )
-
-      message_parts = [
-          f"💱 *SNIPER KE 254 - FOREX SIGNALS*\n\n{session_warning}"
-          f"{eur_emoji} *EUR/USD - {eur_action}* (RSI: `{eur_rsi:.1f}`)\n"
-          f"Entry: `{eur_price:.5f}` | TP: `{eur_tp:.5f}` | SL:"
-          f" `{eur_sl:.5f}`\n\n"
-          f"{jpy_emoji} *USD/JPY - {jpy_action}* (RSI: `{jpy_rsi:.1f}`)\n"
-          f"Entry: `{jpy_price:.3f}` | TP: `{jpy_tp:.3f}` | SL:"
-          f" `{jpy_sl:.3f}`"
-      ]
-      send_message(chat_id, "".join(message_parts))
 
     elif "/ALLFOREX" in text or "/FOREXSCAN" in text:
       forex_pairs = [
@@ -251,23 +268,25 @@ def webhook():
           ("NZD/USD", "NZDUSD=X"),
           ("USD/CHF", "USDCHF=X"),
       ]
-
       message_blocks = [
           f"💱 *SNIPER KE 254 - ALL MAJOR FOREX SCAN*\n\n{session_warning}"
       ]
 
       for name, symbol in forex_pairs:
-        action, price, tp1, tp2, sl, rsi = get_advanced_technical_signal(symbol)
+        action, price, tp1, tp2, sl, rsi, adx = get_advanced_technical_signal(
+            symbol
+        )
         emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⏳"
 
         if action in ["BUY", "SELL"]:
           block = (
-              f"{emoji} *{name} - {action}* (RSI: `{rsi:.1f}`)\n"
+              f"{emoji} *{name} - {action}* (RSI: `{rsi:.1f}` | ADX:"
+              f" `{adx:.1f}`)\n"
               f"Entry: `{price:.5f}` | TP: `{tp1:.5f}` | SL: `{sl:.5f}`\n\n"
           )
         else:
           block = (
-              f"⏳ *{name} - NO SETUP* (RSI: `{rsi:.1f}`)\n"
+              f"⏳ *{name} - NO SETUP* (RSI: `{rsi:.1f}` | ADX: `{adx:.1f}`)\n"
               f"Price: `{price:.5f}` (Consolidating)\n\n"
           )
         message_blocks.append(block)
@@ -289,11 +308,9 @@ def webhook():
           ("Volatility 150 (1s)", "1HZ150V"),
           ("Volatility 250 (1s)", "1HZ250V"),
       ]
-
       message_blocks = [
           f"📊 *SNIPER KE 254 - ALL VOLATILITY MULTIPLIERS*\n\n{session_warning}"
       ]
-
       for name, symbol in indices:
         price = get_deriv_price(symbol)
         last_digit = int(str(price).replace(".", "")[-1])
@@ -307,18 +324,15 @@ def webhook():
         )
         message_blocks.append(block)
 
-      part1 = "".join(message_blocks[0:7])
-      part2 = "".join([message_blocks[0]] + message_blocks[7:])
-
-      send_message(chat_id, part1)
-      send_message(chat_id, part2)
+      send_message(chat_id, "".join(message_blocks[0:7]))
+      send_message(chat_id, "".join([message_blocks[0]] + message_blocks[7:]))
 
   return jsonify({"status": "ok"})
 
 
 @app.route("/", methods=["GET"])
 def home():
-  return "🔥 SNIPER KE 254 PRO ENGINE ACTIVE!"
+  return "🔥 SNIPER KE 254 PRO ENGINE ACTIVE ON VERCEL!"
 
 
 if __name__ == "__main__":
