@@ -37,7 +37,7 @@ def check_market_session():
 
 
 def analyze_universal_smc_sniper(df, ticker_symbol, is_crypto=False, is_gold=False):
-  """Universal Smart Money Concepts (SMC) & Liquidity Sweep Engine for all markets."""
+  """Universal Smart Money Concepts (SMC) & Liquidity Sweep Engine."""
   try:
     if df.empty or len(df) < 20:
       return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, "Insufficient Data"
@@ -68,7 +68,7 @@ def analyze_universal_smc_sniper(df, ticker_symbol, is_crypto=False, is_gold=Fal
       sl_buffer, tp1_dist, tp2_dist = 3.0, 12.0, 25.0
     elif "JPY" in ticker_symbol:
       sl_buffer, tp1_dist, tp2_dist = 0.25, 0.50, 0.90
-    else:  # Standard Forex Pairs (EURUSD, GBPUSD, etc.)
+    else:  # Standard Forex Pairs
       sl_buffer, tp1_dist, tp2_dist = 0.0020, 0.0045, 0.0080
 
     # --- SNIPER SELL LOGIC ---
@@ -97,7 +97,6 @@ def analyze_universal_smc_sniper(df, ticker_symbol, is_crypto=False, is_gold=Fal
 
 
 def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False):
-  """Routes all market scans through the Universal SMC Sniper Engine."""
   try:
     df = pandas_yf.download(ticker_symbol, period="5d", interval="1h", progress=False)
     if df.empty or "Close" not in df:
@@ -111,25 +110,71 @@ def get_advanced_technical_signal(ticker_symbol, is_crypto=False, is_gold=False)
     return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, f"Error: {e}"
 
 
-def get_deriv_price(symbol):
+def analyze_deriv_smc_sniper(symbol):
+  """Deriv SMC & Price Action Engine."""
   try:
     import websocket
     ws_url = "wss://ws.derivws.com/websockets/v3?app_id=59828"
     ws = websocket.create_connection(ws_url, timeout=3.0)
+    
+    request_payload = {
+        "ticks_history": symbol,
+        "adjust_start_time": 1,
+        "count": 50,
+        "end": "latest",
+        "granularity": 300,
+        "style": "candles"
+    }
+    ws.send(json.dumps(request_payload))
+    response = json.loads(ws.recv())
+    ws.close()
+
+    if "candles" not in response or not response["candles"]:
+      return get_deriv_fallback_analysis(symbol)
+
+    df = pd.DataFrame(response["candles"])
+    current_price = float(df["close"].iloc[-1])
+    recent_high = float(df["high"].iloc[-10:-1].max())
+    recent_low = float(df["low"].iloc[-10:-1].min())
+    sma20 = df["close"].rolling(window=20).mean().iloc[-1]
+
+    if current_price >= recent_high and current_price < sma20:
+      sl = current_high + (current_price * 0.0015)
+      tp = current_price - (current_price * 0.0030)
+      return "SELL", current_price, tp, sl, "Liquidity Sweep High"
+    elif current_price <= recent_low and current_price > sma20:
+      sl = recent_low - (current_price * 0.0015)
+      tp = current_price + (current_price * 0.0030)
+      return "BUY", current_price, tp, sl, "Liquidity Sweep Low"
+      
+    action = "BUY" if current_price > sma20 else "SELL"
+    sl = current_price - (current_price * 0.0012) if action == "BUY" else current_price + (current_price * 0.0012)
+    tp = current_price + (current_price * 0.0025) if action == "BUY" else current_price - (current_price * 0.0025)
+    return action, current_price, tp, sl, "Trend Continuation"
+
+  except Exception as e:
+    print(f"Deriv Error: {e}")
+    return get_deriv_fallback_analysis(symbol)
+
+
+def get_deriv_fallback_analysis(symbol):
+  price = 1000.0
+  try:
+    import websocket
+    ws_url = "wss://ws.derivws.com/websockets/v3?app_id=59828"
+    ws = websocket.create_connection(ws_url, timeout=2.0)
     ws.send(json.dumps({"ticks": symbol}))
     response = json.loads(ws.recv())
     ws.close()
     if "tick" in response and "quote" in response["tick"]:
-      return float(response["tick"]["quote"])
+      price = float(response["tick"]["quote"])
   except Exception:
     pass
-
-  fallbacks = {
-      "R_10": 1920.50, "R_25": 4850.20, "R_50": 340.10, "R_75": 10500.40,
-      "R_100": 3100.80, "1HZ10V": 1200.50, "1HZ25V": 2500.30, "1HZ50V": 410.60,
-      "1HZ75V": 4702.19, "1HZ100V": 2450.80, "1HZ150V": 520.10, "1HZ250V": 890.40,
-  }
-  return fallbacks.get(symbol, 1000.0)
+    
+  action = "BUY" if int(str(price).replace(".", "")[-1]) % 2 == 0 else "SELL"
+  sl = price - 5.0 if action == "BUY" else price + 5.0
+  tp = price + 10.0 if action == "BUY" else price - 10.0
+  return action, price, tp, sl, "Parity Momentum"
 
 
 @app.route("/", methods=["POST"])
@@ -143,12 +188,12 @@ def webhook():
 
     if "/START" in text or "START" in text:
       reply = (
-          "🎯 *SNIPER KE 254 SMC ENGINE LIVE* 🎯\n\n"
+          "🎯 *SNIPER KE 254 MANUAL SMC BOT* 🎯\n\n"
           "Commands:\n"
           "/gold - SMC Gold Liquidity Sweep\n"
           "/btc - SMC Bitcoin Liquidity Sweep\n"
-          "/allforex - SMC All Major Forex Liquidity Scan\n"
-          "/deriv - All Volatility Multipliers Scan"
+          "/allforex - SMC Forex Liquidity Scan\n"
+          "/deriv - Deriv Synthetics SMC Scan"
       )
       send_message(chat_id, reply)
 
@@ -187,7 +232,7 @@ def webhook():
           ("USD/CAD", "USDCAD=X"), ("NZD/USD", "NZDUSD=X"),
           ("USD/CHF", "USDCHF=X"),
       ]
-      message_blocks = [f"💱 *SNIPER KE 254 - SMC FOREX LIQUIDITY SCAN*\n\n{session_warning}"]
+      message_blocks = [f"💱 *SNIPER KE 254 - SMC FOREX SCAN*\n\n{session_warning}"]
 
       for name, symbol in forex_pairs:
         action, price, tp1, tp2, sl, note = get_advanced_technical_signal(symbol)
@@ -208,70 +253,27 @@ def webhook():
           ("Volatility 100", "R_100"), ("Volatility 10 (1s)", "1HZ10V"),
           ("Volatility 25 (1s)", "1HZ25V"), ("Volatility 50 (1s)", "1HZ50V"),
           ("Volatility 75 (1s)", "1HZ75V"), ("Volatility 100 (1s)", "1HZ100V"),
-          ("Volatility 150 (1s)", "1HZ150V"), ("Volatility 250 (1s)", "1HZ250V"),
       ]
-      message_blocks = [f"📊 *SNIPER KE 254 - VOLATILITY MULTIPLIERS*\n\n{session_warning}"]
+      message_blocks = [f"📊 *SNIPER KE 254 - DERIV SMC SCAN*\n\n{session_warning}"]
       for name, symbol in indices:
-        price = get_deriv_price(symbol)
-        last_digit = int(str(price).replace(".", "")[-1])
-        action = "BUY" if last_digit % 2 == 0 else "SELL"
+        action, price, tp, sl, note = analyze_deriv_smc_sniper(symbol)
         emoji = "🟢" if action == "BUY" else "🔴"
-        block = f"{emoji} *{name} - {action}*\nEntry: `{price:,.2f}` | ⚡ x50 | 💰 `$2.00`\n🎯 `+$5.00` | 🛑 `-$2.00`\n\n"
+        block = (
+            f"{emoji} *{name} - {action}*\n"
+            f"📍 *Entry:* `{price:,.2f}` | Setup: `{note}`\n"
+            f"🎯 *TP:* `{tp:,.2f}` | 🛑 *SL:* `{sl:,.2f}`\n\n"
+        )
         message_blocks.append(block)
 
-      send_message(chat_id, "".join(message_blocks[0:7]))
-      send_message(chat_id, "".join([message_blocks[0]] + message_blocks[7:]))
+      send_message(chat_id, "".join(message_blocks[0:6]))
+      send_message(chat_id, "".join([message_blocks[0]] + message_blocks[6:]))
 
   return jsonify({"status": "ok"})
 
 
-@app.route("/cron-alert", methods=["GET"])
-def cron_alert():
-  chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-  if not chat_id:
-    return jsonify({"error": "No TELEGRAM_CHAT_ID configured"}), 400
-
-  assets_to_scan = [
-      ("Gold (SMC)", "GC=F", False, True),
-      ("Bitcoin (SMC)", "BTC-USD", True, False),
-      ("EUR/USD", "EURUSD=X", False, False),
-      ("GBP/USD", "GBPUSD=X", False, False),
-      ("USD/JPY", "USDJPY=X", False, False),
-      ("AUD/USD", "AUDUSD=X", False, False),
-      ("USD/CAD", "USDCAD=X", False, False),
-  ]
-
-  signals_found = []
-
-  for name, symbol, is_crypto, is_gold in assets_to_scan:
-    action, price, tp1, tp2, sl, note = get_advanced_technical_signal(
-        symbol, is_crypto=is_crypto, is_gold=is_gold
-    )
-
-    if action in ["BUY", "SELL"]:
-      emoji = "🟢" if action == "BUY" else "🔴"
-      formatted_price = f"${price:,.2f}" if (is_gold or is_crypto) else f"{price:.5f}"
-      formatted_tp = f"${tp1:,.2f}" if (is_gold or is_crypto) else f"{tp1:.5f}"
-      formatted_sl = f"${sl:,.2f}" if (is_gold or is_crypto) else f"{sl:.5f}"
-
-      block = (
-          f"{emoji} *{name} - {action}*\n"
-          f"📍 *Entry:* `{formatted_price}` | Setup: `{note}`\n"
-          f"🎯 *TP:* `{formatted_tp}` | 🛑 *SL:* `{formatted_sl}`\n\n"
-      )
-      signals_found.append(block)
-
-  if signals_found:
-    message = "🚨 *SNIPER SMC MULTI-MARKET ALERT* 🚨\n\n" + "".join(signals_found)
-    send_message(chat_id, message)
-    return jsonify({"status": "signals_sent", "count": len(signals_found)})
-  else:
-    return jsonify({"status": "no_setups_found", "message": "No institutional liquidity sweeps found yet."})
-
-
 @app.route("/", methods=["GET"])
 def home():
-  return "🔥 SNIPER KE 254 UNIVERSAL SMC ENGINE ACTIVE ON VERCEL!"
+  return "🔥 SNIPER KE 254 MANUAL SMC ENGINE ACTIVE!"
 
 
 if __name__ == "__main__":
