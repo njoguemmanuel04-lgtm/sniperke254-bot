@@ -1,14 +1,5 @@
 {
   "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/cron-alert",
-      "schedule": "0 * * * *"
-    }
+    { "source": "/(.*)", "destination": "/api/index.py" }
   ]
 }
