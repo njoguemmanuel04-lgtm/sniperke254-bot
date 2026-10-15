@@ -36,11 +36,12 @@ def check_market_session():
 
 
 def analyze_momentum_signal(ticker_symbol, is_crypto=False, is_gold=False):
-    """Dynamic Momentum Engine powered by 9 & 21 EMA Crossovers on M5."""
+    """Triple EMA Engine (20, 50, 200) on M5 with Macro Trend Filtering."""
     try:
+        # Fetch enough history to accurately calculate the 200 EMA on M5
         df = pandas_yf.download(ticker_symbol, period="5d", interval="5m", progress=False)
-        if df.empty or "Close" not in df or len(df) < 30:
-            return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, "Insufficient Data"
+        if df.empty or "Close" not in df or len(df) < 210:
+            return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, "Insufficient Data for 200 EMA"
 
         close_series = df["Close"].iloc[:, 0] if hasattr(df["Close"], "iloc") and len(df["Close"].shape) > 1 else df["Close"]
         high_series = df["High"].iloc[:, 0] if hasattr(df["High"], "iloc") and len(df["High"].shape) > 1 else df["High"]
@@ -50,14 +51,16 @@ def analyze_momentum_signal(ticker_symbol, is_crypto=False, is_gold=False):
         current_high = float(high_series.iloc[-1])
         current_low = float(low_series.iloc[-1])
 
-        # 1. Calculate Fast (9) and Slow (21) EMAs
-        ema9 = close_series.ewm(span=9, adjust=False).mean()
-        ema21 = close_series.ewm(span=21, adjust=False).mean()
+        # 1. Calculate 20, 50, and 200 EMAs
+        ema20 = close_series.ewm(span=20, adjust=False).mean()
+        ema50 = close_series.ewm(span=50, adjust=False).mean()
+        ema200 = close_series.ewm(span=200, adjust=False).mean()
 
-        curr_ema9 = float(ema9.iloc[-1])
-        prev_ema9 = float(ema9.iloc[-2])
-        curr_ema21 = float(ema21.iloc[-1])
-        prev_ema21 = float(ema21.iloc[-2])
+        curr_ema20 = float(ema20.iloc[-1])
+        prev_ema20 = float(ema20.iloc[-2])
+        curr_ema50 = float(ema50.iloc[-1])
+        prev_ema50 = float(ema50.iloc[-2])
+        curr_ema200 = float(ema200.iloc[-1])
 
         # Dynamic Buffers per Asset Class
         if is_crypto:
@@ -69,26 +72,29 @@ def analyze_momentum_signal(ticker_symbol, is_crypto=False, is_gold=False):
         else:
             sl_buf, tp1_d, tp2_d = 0.0008, 0.0018, 0.0035
 
-        # --- BULLISH CROSSOVER (BUY) ---
-        # 9 EMA crosses above 21 EMA or price holds strong momentum above 9 EMA
-        if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21) or (curr_ema9 > curr_ema21 and current_price > curr_ema9):
-            sl = current_low - sl_buf
-            tp1 = current_price + tp1_d
-            tp2 = current_price + tp2_d
-            return "BUY", current_price, tp1, tp2, sl, "9/21 EMA Bullish Momentum Cross"
+        # --- BULLISH TRIPLE EMA SETUP (BUY) ---
+        # Rules: 20 > 50 EMA, and price/EMAs must be strictly above the 200 EMA macro filter
+        if (curr_ema20 > curr_ema50) and (curr_ema20 > curr_ema200) and (current_price > curr_ema20):
+            # Check if a fresh crossover happened or strong continuation
+            if (prev_ema20 <= prev_ema50) or (current_price > curr_ema20):
+                sl = current_low - sl_buf
+                tp1 = current_price + tp1_d
+                tp2 = current_price + tp2_d
+                return "BUY", current_price, tp1, tp2, sl, "Triple EMA Bullish Trend (Above 200 EMA)"
 
-        # --- BEARISH CROSSOVER (SELL) ---
-        # 9 EMA crosses below 21 EMA or price holds strong momentum below 9 EMA
-        if (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21) or (curr_ema9 < curr_ema21 and current_price < curr_ema9):
-            sl = current_high + sl_buf
-            tp1 = current_price - tp1_d
-            tp2 = current_price - tp2_d
-            return "SELL", current_price, tp1, tp2, sl, "9/21 EMA Bearish Momentum Cross"
+        # --- BEARISH TRIPLE EMA SETUP (SELL) ---
+        # Rules: 20 < 50 EMA, and price/EMAs must be strictly below the 200 EMA macro filter
+        if (curr_ema20 < curr_ema50) and (curr_ema20 < curr_ema200) and (current_price < curr_ema20):
+            if (prev_ema20 >= prev_ema50) or (current_price < curr_ema20):
+                sl = current_high + sl_buf
+                tp1 = current_price - tp1_d
+                tp2 = current_price - tp2_d
+                return "SELL", current_price, tp1, tp2, sl, "Triple EMA Bearish Trend (Below 200 EMA)"
 
-        return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, "Waiting for EMA Crossover"
+        return "NO_SIGNAL", current_price, 0.0, 0.0, 0.0, "Consolidating / Against 200 EMA Bias"
 
     except Exception as e:
-        print(f"Momentum Engine Error for {ticker_symbol}: {e}")
+        print(f"Triple EMA Engine Error for {ticker_symbol}: {e}")
         return "NO_SIGNAL", 0.0, 0.0, 0.0, 0.0, f"Error: {e}"
 
 
@@ -103,11 +109,11 @@ def webhook():
 
         if "/START" in text or "START" in text:
             reply = (
-                "🎯 *SNIPER KE 254 (M5 MOMENTUM ENGINE)* 🎯\n\n"
+                "🎯 *SNIPER KE 254 (TRIPLE EMA 20/50/200)* 🎯\n\n"
                 "Commands:\n"
-                "/gold - M5 Gold Momentum\n"
-                "/btc - M5 Bitcoin Momentum\n"
-                "/allforex - M5 Forex Momentum Scan"
+                "/gold - M5 Gold Macro Trend\n"
+                "/btc - M5 Bitcoin Macro Trend\n"
+                "/allforex - M5 Forex Macro Scan"
             )
             send_message(chat_id, reply)
 
@@ -146,7 +152,7 @@ def webhook():
                 ("USD/CAD", "USDCAD=X"), ("NZD/USD", "NZDUSD=X"),
                 ("USD/CHF", "USDCHF=X"),
             ]
-            message_blocks = [f"💱 *SNIPER KE 254 - M5 MOMENTUM SCAN*\n\n{session_warning}"]
+            message_blocks = [f"💱 *SNIPER KE 254 - TRIPLE EMA SCAN*\n\n{session_warning}"]
 
             for name, symbol in forex_pairs:
                 action, price, tp1, tp2, sl, note = analyze_momentum_signal(symbol)
@@ -165,7 +171,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🔥 SNIPER KE 254 M5 MOMENTUM ENGINE ONLINE!"
+    return "🔥 SNIPER KE 254 TRIPLE EMA ENGINE ONLINE!"
 
 
 if __name__ == "__main__":
